@@ -215,7 +215,7 @@ final class Assistant: ObservableObject, LiveClientDelegate, ToolHost {
             "tools": toolsList(),
             "outputAudioTranscription": [:] as [String: Any],
             // 15 dk sınırını kaldırır ve maliyete tavan koyar (Live her turda tüm bağlamı faturalar).
-            "contextWindowCompression": ["triggerTokens": String(settings.contextLimit), "slidingWindow": [:] as [String: Any]],
+            "contextWindowCompression": ["triggerTokens": String(effectiveContextLimit), "slidingWindow": [:] as [String: Any]],
         ]
         setup["sessionResumption"] = handle.map { ["handle": $0] } ?? [:] as [String: Any]
         if activeMode == "jev_pre" {
@@ -228,6 +228,10 @@ final class Assistant: ObservableObject, LiveClientDelegate, ToolHost {
     }
 
     private var searchOn: Bool { settings.googleSearch && !searchBlocked }
+
+    /// Arama sonuçları bağlama eklenir; 8k sınırla ilk sıkıştırmada sunucu 1007 "invalid argument" veriyor.
+    /// Ölçüm (2026-10-05, 3.8 Live, faturalı anahtar): 8k ✗ · 16k ✓ · 32k ✓ · sınırsız ✓. Arama açıkken en az 16k.
+    private var effectiveContextLimit: Int { searchOn ? max(settings.contextLimit, 16000) : settings.contextLimit }
 
     private func systemText() -> String {
         var s = Catalog.systemInstruction

@@ -210,7 +210,7 @@ struct SettingsView: View {
                 }
                 Section {
                     Toggle("Google araması", isOn: $s.googleSearch)
-                } footer: { Text("Faturalı anahtar gerekir. Kota hatası gelirse o oturumda kendiliğinden kapanır.") }
+                } footer: { Text("Faturalı anahtar gerekir. Açıkken konuşma belleği en az 16k olur (8k'da arama sonuçları sığmıyor, bağlantı kopuyor); uzun konuşmada biraz daha pahalı. Kota hatası gelirse o oturumda kendiliğinden kapanır.") }
                 ShortcutsSection()
                 VaultSection()
                 Section("Model") {
