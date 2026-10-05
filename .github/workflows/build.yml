@@ -1,0 +1,33 @@
+name: build-ipa
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Xcode
+        run: |
+          latest=$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)
+          sudo xcode-select -s "$latest"
+          xcodebuild -version
+      - name: Proje üret
+        run: brew install xcodegen && xcodegen generate
+      - name: Derle (imzasız)
+        run: |
+          xcodebuild -project AtlasProbe.xcodeproj -scheme AtlasProbe -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
+      - name: IPA paketle
+        run: |
+          mkdir Payload
+          cp -R build/Build/Products/Release-iphoneos/AtlasProbe.app Payload/
+          zip -qry AtlasProbe.ipa Payload
+          ls -la AtlasProbe.ipa
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AtlasProbe-ipa
+          path: AtlasProbe.ipa
+          retention-days: 14

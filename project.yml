@@ -1,0 +1,36 @@
+# XcodeGen proje tanımı: Mac olmadan yazılır, GitHub Actions'ın macOS sunucusunda .xcodeproj'a çevrilir.
+name: AtlasProbe
+options:
+  bundleIdPrefix: com.f23783
+  deploymentTarget:
+    iOS: "17.0"
+targets:
+  AtlasProbe:
+    type: application
+    platform: iOS
+    sources: [Sources]
+    scheme: {}
+    info:
+      path: Sources/Info.plist
+      properties:
+        CFBundleDisplayName: AtlasProbe
+        CFBundleShortVersionString: "0.1"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        NSMicrophoneUsageDescription: "Ekran kilitliyken dinleme testini yapmak için mikrofon gerekiyor."
+        # Ücretsiz geliştirici hesabında da destekleniyor (Apple 'Supported capabilities' tablosu).
+        UIBackgroundModes: [audio]
+        LSApplicationQueriesSchemes: [shortcuts]
+        CFBundleURLTypes:
+          - CFBundleURLName: com.f23783.atlasprobe
+            CFBundleURLSchemes: [atlasprobe]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.f23783.atlasprobe
+        TARGETED_DEVICE_FAMILY: "1"
+        SWIFT_VERSION: "5.0"
+        # İmzayı telefonda SideStore/iLoader, Fido'nun Apple ID'siyle atar.
+        CODE_SIGNING_ALLOWED: "NO"
+        CODE_SIGNING_REQUIRED: "NO"
+        CODE_SIGN_IDENTITY: ""
