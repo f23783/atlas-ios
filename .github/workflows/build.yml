@@ -2,6 +2,8 @@ name: build-ipa
 on:
   push:
   workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: macos-latest
@@ -33,3 +35,11 @@ jobs:
           name: ipa
           path: "*.ipa"
           retention-days: 14
+      # Artifact'lar Azure blob'dan iner; Fido'nun ağında o adres TLS'te kesiliyor (2026-10-05).
+      # Release dosyaları objects.githubusercontent.com'dan iner: "son" ön-sürümü her derlemede yenilenir.
+      - name: Son derlemeyi yayınla
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete son -y --cleanup-tag || true
+          gh release create son *.ipa --prerelease --title "Son derleme" --notes "${GITHUB_SHA::7}"
