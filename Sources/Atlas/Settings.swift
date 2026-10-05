@@ -49,6 +49,7 @@ enum Catalog {
     Varsayılan dilin Türkçe; kullanıcı başka dilde konuşursa o dile geç.
     Konuşur gibi cevap ver: kısa cümleler, doğal tonlama. Liste, madde işareti, markdown kullanma.
     Emin değilsen söyle, uydurma.
+    Canlı bilgi gerektiren sorularda (hava, saat, takvim, telefonun durumu) tahmin etme, aracı kullan.
     """
 }
 
@@ -60,6 +61,10 @@ final class AppSettings: ObservableObject {
     @Published var contextLimit: Int { didSet { d.set(contextLimit, forKey: "contextLimit") } }
     @Published var geminiKey: String { didSet { Keychain.set("gemini", geminiKey) } }
     @Published var typesafeKey: String { didSet { Keychain.set("typesafe", typesafeKey) } }
+    /// Atlas'ın çalıştırabileceği Kestirmeler (izin listesi). Listede olmayan Kestirme çalıştırılamaz.
+    @Published var shortcuts: [AllowedShortcut] {
+        didSet { d.set(try? JSONEncoder().encode(shortcuts), forKey: "shortcuts") }
+    }
 
     init() {
         voice = d.string(forKey: "voice") ?? "Kore"
@@ -69,5 +74,6 @@ final class AppSettings: ObservableObject {
         contextLimit = c == 0 ? 8000 : c
         geminiKey = Keychain.get("gemini")
         typesafeKey = Keychain.get("typesafe")
+        shortcuts = (d.data(forKey: "shortcuts")).flatMap { try? JSONDecoder().decode([AllowedShortcut].self, from: $0) } ?? []
     }
 }

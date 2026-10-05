@@ -16,6 +16,7 @@ struct ContentView: View {
     @EnvironmentObject var a: Assistant
     @EnvironmentObject var settings: AppSettings
     @State private var showSettings = false
+    @State private var showLog = false
     @State private var draft = ""
 
     var body: some View {
@@ -31,6 +32,11 @@ struct ContentView: View {
         .background(Palette.bg.ignoresSafeArea())
         .preferredColorScheme(.dark)
         .sheet(isPresented: $showSettings) { SettingsView().environmentObject(settings) }
+        .sheet(isPresented: $showLog) { LogView().environmentObject(Log.shared) }
+        .alert(a.pendingConfirm?.title ?? "", isPresented: Binding(get: { a.pendingConfirm != nil }, set: { if !$0 && a.pendingConfirm != nil { a.answerConfirm(false) } })) {
+            Button("Çalıştır") { a.answerConfirm(true) }
+            Button("Vazgeç", role: .cancel) { a.answerConfirm(false) }
+        } message: { Text(a.pendingConfirm?.message ?? "") }
         .alert("Atlas", isPresented: Binding(get: { a.error != nil }, set: { if !$0 { a.error = nil } })) {
             Button("Tamam", role: .cancel) {}
         } message: { Text(a.error ?? "") }
@@ -51,6 +57,8 @@ struct ContentView: View {
             Spacer()
             Text(String(format: "₺%.2f · bugün ₺%.2f", a.sessionTRY, a.todayTRY).replacingOccurrences(of: ".", with: ","))
                 .font(.caption.monospacedDigit()).foregroundStyle(Palette.muted)
+            Button { showLog = true } label: { Image(systemName: "doc.text.magnifyingglass") }
+                .foregroundStyle(Palette.muted).padding(.leading, 6)
             Button { showSettings = true } label: { Image(systemName: "gearshape") }
                 .foregroundStyle(Palette.muted).padding(.horizontal, 6)
             HStack(spacing: 6) {
@@ -187,6 +195,7 @@ struct SettingsView: View {
                 } header: { Text("Anahtarlar") } footer: {
                     Text("Yalnız bu telefonun Keychain'inde saklanır; koda ve yedeklere girmez.")
                 }
+                ShortcutsSection()
                 Section("Model") {
                     Picker("Model", selection: $s.model) {
                         ForEach(Catalog.models, id: \.id) { Text($0.label).tag($0.id) }
@@ -212,5 +221,73 @@ struct SettingsView: View {
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Bitti") { dismiss() } } }
         }
         .preferredColorScheme(.dark)
+    }
+}
+
+
+/// Hata günlüğü: bağlantı, kapanış kodları, izinler, araçlar. Paylaş ile metin olarak dışarı alınır.
+struct LogView: View {
+    @EnvironmentObject var log: Log
+    @Environment(\.dismiss) private var dismiss
+    @State private var onlyProblems = false
+
+    var body: some View {
+        NavigationStack {
+            ScrollViewReader { proxy in
+                List(log.lines.filter { !onlyProblems || $0.level == "x" || $0.level == "!" }) { l in
+                    Text(l.text)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(l.level == "x" ? Color.red : l.level == "!" ? Color.orange : l.level == "·" ? Color.secondary : Color.primary)
+                        .id(l.id)
+                        .textSelection(.enabled)
+                }
+                .listStyle(.plain)
+                .onAppear { if let id = log.lines.last?.id { proxy.scrollTo(id, anchor: .bottom) } }
+            }
+            .navigationTitle("Günlük")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) { Toggle("Yalnız sorunlar", isOn: $onlyProblems).toggleStyle(.button) }
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    ShareLink(item: log.all) { Image(systemName: "square.and.arrow.up") }
+                    Button(role: .destructive) { log.clear() } label: { Image(systemName: "trash") }
+                    Button("Bitti") { dismiss() }
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+    }
+}
+
+/// Atlas'ın çalıştırabileceği Kestirmeler. Listede olmayan çalışmaz; "onay" işaretliyse her seferinde ekranda sorulur.
+struct ShortcutsSection: View {
+    @EnvironmentObject var s: AppSettings
+    @State private var name = ""
+    @State private var about = ""
+    @State private var confirm = true
+
+    var body: some View {
+        Section {
+            ForEach(s.shortcuts) { sc in
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack {
+                        Text(sc.name).bold()
+                        if sc.confirm { Text("onaylı").font(.caption2).foregroundStyle(.orange) }
+                    }
+                    Text(sc.about).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .onDelete { s.shortcuts.remove(atOffsets: $0) }
+            TextField("Kestirme adı (Kestirmeler'deki gibi)", text: $name).textInputAutocapitalization(.never)
+            TextField("Ne yapar? (Atlas buna bakarak seçer)", text: $about)
+            Toggle("Her seferinde onay iste", isOn: $confirm)
+            Button("Ekle") {
+                s.shortcuts.append(AllowedShortcut(name: name.trimmingCharacters(in: .whitespaces), about: about, confirm: confirm))
+                name = ""; about = ""; confirm = true
+            }
+            .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || about.isEmpty)
+        } header: { Text("Kestirmeler") } footer: {
+            Text("Mesaj gönderme gibi dışarıya dönük işler için onayı açık bırak. Kestirmeler yalnız telefon kilidi açıkken çalışır. Değişiklik bir sonraki bağlantıda geçerli.")
+        }
     }
 }

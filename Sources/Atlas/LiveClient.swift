@@ -33,6 +33,7 @@ final class LiveClient: NSObject, URLSessionWebSocketDelegate {
 
     func connect() {
         let url = URL(string: "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=\(apiKey)")!
+        Log.i("soket: generativelanguage.googleapis.com (anahtar günlüğe yazılmaz)")
         let s = URLSession(configuration: .default, delegate: self, delegateQueue: OperationQueue())
         let t = s.webSocketTask(with: url)
         t.maximumMessageSize = 16 * 1024 * 1024
@@ -52,7 +53,7 @@ final class LiveClient: NSObject, URLSessionWebSocketDelegate {
     func send(_ obj: [String: Any]) {
         guard let task, let data = try? JSONSerialization.data(withJSONObject: obj),
               let text = String(data: data, encoding: .utf8) else { return }
-        task.send(.string(text)) { _ in }
+        task.send(.string(text)) { err in if let err { Log.e("gönderilemedi: \(err.localizedDescription)") } }
     }
 
     func sendAudio(_ pcm16: Data) {
@@ -87,8 +88,8 @@ final class LiveClient: NSObject, URLSessionWebSocketDelegate {
                     }
                 }
                 self.receiveLoop()
-            case .failure:
-                break // kapanış didCloseWith / didCompleteWithError ile bildirilir
+            case .failure(let err):
+                if !self.closed { Log.w("alma hatası: \(err.localizedDescription)") } // kapanış didClose ile bildirilir
             }
         }
     }

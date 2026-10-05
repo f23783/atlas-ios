@@ -42,6 +42,7 @@ final class AudioIO {
         }
         let inFormat = input.outputFormat(forBus: 0)
         converter = AVAudioConverter(from: inFormat, to: micFormat)
+        Log.i("mikrofon: \(Int(inFormat.sampleRate)) Hz, \(inFormat.channelCount) kanal → 16 kHz; rota: \(session.currentRoute.outputs.map(\.portName).joined(separator: ","))")
         input.removeTap(onBus: 0)
         input.installTap(onBus: 0, bufferSize: 1024, format: inFormat) { [weak self] buffer, _ in
             self?.handleMic(buffer)
@@ -86,7 +87,8 @@ final class AudioIO {
             status.pointee = .haveData
             return buffer
         }
-        guard error == nil, out.frameLength > 0, let p = out.int16ChannelData?[0] else { return }
+        if let error { Log.e("ses dönüşümü: \(error.localizedDescription)"); return }
+        guard out.frameLength > 0, let p = out.int16ChannelData?[0] else { return }
         pending.append(Data(bytes: p, count: Int(out.frameLength) * 2))
         // 100 ms = 1600 örnek = 3200 bayt (Google'ın önerdiği parça boyu)
         while pending.count >= 3200 {

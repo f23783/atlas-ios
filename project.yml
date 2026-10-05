@@ -22,11 +22,14 @@ targets:
       path: Sources/Atlas/Info.plist
       properties:
         CFBundleDisplayName: Atlas
-        CFBundleShortVersionString: "0.1"
         CFBundleVersion: "1"
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         NSMicrophoneUsageDescription: "Atlas'la konuşabilmen için mikrofon gerekiyor."
+        NSLocationWhenInUseUsageDescription: "Hava durumunu bulunduğun yere göre söylemek için."
+        NSCalendarsFullAccessUsageDescription: "Takvimini okuyup etkinlik ekleyebilmek için."
+        NSRemindersFullAccessUsageDescription: "Anımsatıcılarını okuyup ekleyebilmek ve tamamlayabilmek için."
+        CFBundleShortVersionString: "0.2"
         # Kilitliyken konuşma (ücretsiz hesapta da var; AtlasProbe ile kanıtlandı 2026-10-05).
         UIBackgroundModes: [audio]
         LSApplicationQueriesSchemes: [shortcuts]

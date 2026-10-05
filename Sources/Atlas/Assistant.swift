@@ -13,7 +13,7 @@ struct Turn: Identifiable {
 
 /// Oturumun tek sahibi (masaüstündeki LiveSession + ipc + app.js'in iPhone karşılığı).
 @MainActor
-final class Assistant: ObservableObject, LiveClientDelegate {
+final class Assistant: ObservableObject, LiveClientDelegate, ToolHost {
     enum Conn: String { case idle = "Kapalı", connecting = "Bağlanıyor", open = "Bağlı", reconnecting = "Yeniden bağlanıyor" }
 
     @Published var conn: Conn = .idle
@@ -24,6 +24,9 @@ final class Assistant: ObservableObject, LiveClientDelegate {
     @Published var todayTRY: Double = 0
     /// Model sesi çalıyor mu (AudioIO yayınlamaz; ekrandaki "Konuşuyor" yazısı için 10 Hz'de yansıtılır).
     @Published var speaking = false
+    /// Ekranda bekleyen Evet/Hayır sorusu (Kestirme onayı).
+    @Published var pendingConfirm: (title: String, message: String)?
+    private var confirmCont: CheckedContinuation<Bool, Never>?
     private var poller: Task<Void, Never>?
 
     let audio = AudioIO()
@@ -46,6 +49,7 @@ final class Assistant: ObservableObject, LiveClientDelegate {
 
     init(settings: AppSettings) {
         self.settings = settings
+        Timers.shared.host = self
         todayTRY = Ledger.todayUSD * Pricing.usdTry
         audio.onChunk = { [weak self] data in
             Task { @MainActor in self?.client?.sendAudio(data) }
@@ -53,6 +57,7 @@ final class Assistant: ObservableObject, LiveClientDelegate {
         NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
             let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
             let ended = raw.flatMap(AVAudioSession.InterruptionType.init(rawValue:)) == .ended
+            Log.w("ses oturumu kesintisi: \(ended ? "bitti" : "başladı")")
             Task { @MainActor in if ended { self?.resumeAudio() } }
         }
         Task { await Pricing.refreshRate(); self.todayTRY = Ledger.todayUSD * Pricing.usdTry }
@@ -63,11 +68,16 @@ final class Assistant: ObservableObject, LiveClientDelegate {
     func toggle() { conn == .idle ? start() : stop() }
 
     func start() {
-        guard !settings.geminiKey.isEmpty else { error = "Önce Ayarlar'dan Gemini API anahtarını gir."; return }
+        guard !settings.geminiKey.isEmpty else { error = "Önce Ayarlar'dan Gemini API anahtarını gir."; Log.w("başlat: anahtar yok"); return }
+        Log.i("başlat: model=\(settings.model) ses=\(settings.voice) bellek=\(settings.contextLimit)")
         AVAudioApplication.requestRecordPermission { granted in
             Task { @MainActor in
-                guard granted else { self.error = "Mikrofon izni yok: Ayarlar → Atlas → Mikrofon."; return }
-                do { try self.audio.start() } catch { self.error = "Ses başlatılamadı: \(error.localizedDescription)"; return }
+                guard granted else { self.error = "Mikrofon izni yok: Ayarlar → Atlas → Mikrofon."; Log.e("mikrofon izni yok"); return }
+                do { try self.audio.start() } catch {
+                    self.error = "Ses başlatılamadı: \(error.localizedDescription)"
+                    Log.e("ses başlatılamadı: \(error)")
+                    return
+                }
                 self.audio.muted = !self.micOn
                 self.stopping = false
                 self.reconnects = 0
@@ -88,6 +98,7 @@ final class Assistant: ObservableObject, LiveClientDelegate {
     }
 
     func stop() {
+        Log.i("durdur")
         stopping = true
         watchdog?.cancel()
         poller?.cancel()
@@ -101,7 +112,7 @@ final class Assistant: ObservableObject, LiveClientDelegate {
 
     private func resumeAudio() {
         guard conn != .idle else { return }
-        try? audio.start()
+        do { try audio.start(); Log.i("ses yeniden başladı") } catch { Log.e("ses yeniden başlatılamadı: \(error)") }
     }
 
     private func setupMessage() -> [String: Any] {
@@ -112,7 +123,7 @@ final class Assistant: ObservableObject, LiveClientDelegate {
                 "speechConfig": ["voiceConfig": ["prebuiltVoiceConfig": ["voiceName": settings.voice]]],
             ],
             "systemInstruction": ["parts": [["text": Catalog.systemInstruction]], "role": "user"],
-            "tools": [["functionDeclarations": Tools.all.map(\.declaration)]],
+            "tools": [["functionDeclarations": Tools.declarations(shortcuts: settings.shortcuts)]],
             "inputAudioTranscription": [:] as [String: Any],
             "outputAudioTranscription": [:] as [String: Any],
             // 15 dk sınırını kaldırır ve maliyete tavan koyar (Live her turda tüm bağlamı faturalar).
@@ -123,6 +134,7 @@ final class Assistant: ObservableObject, LiveClientDelegate {
     }
 
     private func connect(_ phase: Conn) {
+        Log.i("bağlanıyor (\(phase.rawValue))\(handle != nil ? ", devam anahtarıyla" : "")")
         conn = phase
         client?.delegate = nil
         client?.close()
@@ -134,14 +146,15 @@ final class Assistant: ObservableObject, LiveClientDelegate {
 
     // MARK: LiveClientDelegate
 
-    func liveDidOpen() { openedAt = Date() }
+    func liveDidOpen() { openedAt = Date(); Log.i("soket açıldı, kurulum gönderildi") }
 
-    func liveDidSetup() { conn = .open; error = nil }
+    func liveDidSetup() { conn = .open; error = nil; Log.i("kurulum tamam (setupComplete)") }
 
     func liveDidClose(code: Int, reason: String) {
         client = nil
         if stopping { return }
         lastReason = reason.isEmpty ? "kod \(code)" : reason
+        Log.e("bağlantı kapandı: kod=\(code) sebep=\(reason.isEmpty ? "-" : reason) (açık kaldı \(String(format: "%.1f", Date().timeIntervalSince(openedAt))) sn)")
         let r = NSRange(lastReason.startIndex..., in: lastReason)
         if code == 1008 || Self.fatal.firstMatch(in: lastReason, range: r) != nil {
             error = "Bağlantı kapandı: \(lastReason)"
@@ -149,7 +162,7 @@ final class Assistant: ObservableObject, LiveClientDelegate {
             return
         }
         // Açılır açılmaz ölen bağlantı: devam anahtarı bozuk durumu geri getiriyor olabilir → temiz başla.
-        if handle != nil && Date().timeIntervalSince(openedAt) < 3 { handle = nil }
+        if handle != nil && Date().timeIntervalSince(openedAt) < 3 { handle = nil; Log.w("açılır açılmaz kapandı: devam anahtarı bırakıldı") }
         reconnects += 1
         if reconnects > 5 {
             error = "Yeniden bağlanılamadı (\(lastReason)). Ayarlar'dan başka model dene."
@@ -167,13 +180,14 @@ final class Assistant: ObservableObject, LiveClientDelegate {
     func liveDidReceive(message m: [String: Any]) {
         if let u = m["usageMetadata"] as? [String: Any] {
             let usd = Pricing.usd(u)
+            Log.i("kullanım: girdi \((u["promptTokenCount"] as? Int) ?? 0) · çıktı \((u["responseTokenCount"] as? Int) ?? 0) tok · $\(String(format: "%.5f", usd))")
             sessionTRY += usd * Pricing.usdTry
             todayTRY = Ledger.add(usd) * Pricing.usdTry
         }
         if let r = m["sessionResumptionUpdate"] as? [String: Any], (r["resumable"] as? Bool) == true, let h = r["newHandle"] as? String {
             handle = h
         }
-        if m["goAway"] != nil { connect(.reconnecting); return } // sunucu birazdan kapatacak: devam anahtarıyla yenile
+        if m["goAway"] != nil { Log.w("goAway: bağlantı yenileniyor"); connect(.reconnecting); return } // sunucu birazdan kapatacak: devam anahtarıyla yenile
         if let tc = m["toolCall"] as? [String: Any], let calls = tc["functionCalls"] as? [[String: Any]] {
             watchdog?.cancel()
             Task { await handleTools(calls) }
@@ -209,8 +223,10 @@ final class Assistant: ObservableObject, LiveClientDelegate {
         var responses: [[String: Any]] = []
         for call in calls {
             let name = call["name"] as? String ?? "?"
-            current { $0.chips.append("araç: \(name == "get_current_time" ? "saat" : name)") }
-            let result = await Tools.run(call)
+            current { $0.chips.append("araç: \(Self.label(name))") }
+            Log.i("araç → \(name) \(call["args"].map { "\($0)" } ?? "")")
+            let result = await Tools.run(call, shortcuts: settings.shortcuts, host: self)
+            Log.i("araç ← \(name) \(String(describing: result).prefix(300))")
             responses.append(["id": call["id"] ?? "", "name": name, "response": result])
         }
         client?.sendToolResponses(responses)
@@ -221,7 +237,35 @@ final class Assistant: ObservableObject, LiveClientDelegate {
             guard !Task.isCancelled, self.conn == .open else { return }
             self.client?.sendText("[Sistem bildirimi — kullanıcı söylemedi] Araç sonucu geldi. Şimdi kullanıcıya kısaca sesli cevap ver.")
             self.current { $0.chips.append("bekçi dürttü") }
+            Log.w("bekçi: model 6 sn sustu, dürtüldü")
         }
+    }
+
+    static func label(_ n: String) -> String {
+        ["get_current_time": "saat", "hava_durumu": "hava", "zamanlayici": "zamanlayıcı", "telefon": "telefon",
+         "takvim": "takvim", "animsatici": "anımsatıcı", "kestirme_calistir": "kestirme"][n] ?? n
+    }
+
+    // MARK: ToolHost
+
+    func confirm(title: String, message: String) async -> Bool {
+        confirmCont?.resume(returning: false)
+        return await withCheckedContinuation { c in
+            confirmCont = c
+            pendingConfirm = (title, message)
+        }
+    }
+
+    func answerConfirm(_ yes: Bool) {
+        Log.i("onay: \(yes ? "evet" : "hayır")")
+        pendingConfirm = nil
+        confirmCont?.resume(returning: yes)
+        confirmCont = nil
+    }
+
+    func announce(_ text: String) {
+        guard conn == .open else { return }
+        client?.sendText("[Sistem bildirimi — kullanıcı söylemedi] \(text)")
     }
 
     // MARK: Metin girişi
