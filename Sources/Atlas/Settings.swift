@@ -59,6 +59,8 @@ final class AppSettings: ObservableObject {
     @Published var voice: String { didSet { d.set(voice, forKey: "voice") } }
     @Published var model: String { didSet { d.set(model, forKey: "model") } }
     @Published var contextLimit: Int { didSet { d.set(contextLimit, forKey: "contextLimit") } }
+    /// "direct": Gemini araçları kendisi seçer · "jev_pre": Jev cümleye önce bakar, gerekiyorsa ipucu verir (paralel döküm + istemci sırası)
+    @Published var toolMode: String { didSet { d.set(toolMode, forKey: "toolMode") } }
     @Published var geminiKey: String { didSet { Keychain.set("gemini", geminiKey) } }
     @Published var typesafeKey: String { didSet { Keychain.set("typesafe", typesafeKey) } }
     /// Atlas'ın çalıştırabileceği Kestirmeler (izin listesi). Listede olmayan Kestirme çalıştırılamaz.
@@ -72,6 +74,7 @@ final class AppSettings: ObservableObject {
         model = d.string(forKey: "model") ?? "gemini-3.1-flash-live-preview"
         let c = d.integer(forKey: "contextLimit")
         contextLimit = c == 0 ? 8000 : c
+        toolMode = d.string(forKey: "toolMode") ?? "direct"
         geminiKey = Keychain.get("gemini")
         typesafeKey = Keychain.get("typesafe")
         shortcuts = (d.data(forKey: "shortcuts")).flatMap { try? JSONDecoder().decode([AllowedShortcut].self, from: $0) } ?? []

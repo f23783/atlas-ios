@@ -17,6 +17,7 @@ struct ContentView: View {
     @EnvironmentObject var settings: AppSettings
     @State private var showSettings = false
     @State private var showLog = false
+    @State private var showLab = false
     @State private var draft = ""
 
     var body: some View {
@@ -24,7 +25,7 @@ struct ContentView: View {
             header
             Orb().frame(height: 220).onTapGesture { a.toggle() }
             Text(hint).font(.callout).foregroundStyle(Palette.text).padding(.top, 2)
-            Text("\(settings.model) · \(settings.voice) · bellek \(settings.contextLimit / 1000)k")
+            Text("\(settings.model) · \(settings.voice) · bellek \(settings.contextLimit / 1000)k · \(settings.toolMode == "jev_pre" ? "ön-seçim" : "doğrudan")")
                 .font(.caption2).foregroundStyle(Palette.muted.opacity(0.7))
             transcript
             bar
@@ -33,6 +34,7 @@ struct ContentView: View {
         .preferredColorScheme(.dark)
         .sheet(isPresented: $showSettings) { SettingsView().environmentObject(settings) }
         .sheet(isPresented: $showLog) { LogView().environmentObject(Log.shared) }
+        .sheet(isPresented: $showLab) { LabView().environmentObject(a).environmentObject(settings) }
         .alert(a.pendingConfirm?.title ?? "", isPresented: Binding(get: { a.pendingConfirm != nil }, set: { if !$0 && a.pendingConfirm != nil { a.answerConfirm(false) } })) {
             Button("Çalıştır") { a.answerConfirm(true) }
             Button("Vazgeç", role: .cancel) { a.answerConfirm(false) }
@@ -57,6 +59,8 @@ struct ContentView: View {
             Spacer()
             Text(String(format: "₺%.2f · bugün ₺%.2f", a.sessionTRY, a.todayTRY).replacingOccurrences(of: ".", with: ","))
                 .font(.caption.monospacedDigit()).foregroundStyle(Palette.muted)
+            Button { showLab = true } label: { Image(systemName: "flask") }
+                .foregroundStyle(settings.toolMode == "jev_pre" ? Palette.accent : Palette.muted).padding(.leading, 6)
             Button { showLog = true } label: { Image(systemName: "doc.text.magnifyingglass") }
                 .foregroundStyle(Palette.muted).padding(.leading, 6)
             Button { showSettings = true } label: { Image(systemName: "gearshape") }
@@ -195,6 +199,15 @@ struct SettingsView: View {
                 } header: { Text("Anahtarlar") } footer: {
                     Text("Yalnız bu telefonun Keychain'inde saklanır; koda ve yedeklere girmez.")
                 }
+                Section {
+                    Picker("Araç seçimi", selection: $s.toolMode) {
+                        Text("Doğrudan").tag("direct")
+                        Text("Jev ön-seçim").tag("jev_pre")
+                    }
+                    .pickerStyle(.segmented)
+                } header: { Text("Araç seçimi") } footer: {
+                    Text("Ön-seçim: sen konuşurken ayrı bir döküm modeli yazıya çevirir, Jev bakar, gerekiyorsa Gemini'ye tek satır ipucu verir. TypeSafe anahtarı gerekir.")
+                }
                 ShortcutsSection()
                 Section("Model") {
                     Picker("Model", selection: $s.model) {
@@ -289,5 +302,87 @@ struct ShortcutsSection: View {
         } header: { Text("Kestirmeler") } footer: {
             Text("Mesaj gönderme gibi dışarıya dönük işler için onayı açık bırak. Kestirmeler yalnız telefon kilidi açıkken çalışır. Değişiklik bir sonraki bağlantıda geçerli.")
         }
+    }
+}
+
+
+/// Test paneli: kip geçişi, Jev kararları ve harcaması, kip başına cevap süreleri (medyan).
+struct LabView: View {
+    @EnvironmentObject var a: Assistant
+    @EnvironmentObject var s: AppSettings
+    @Environment(\.dismiss) private var dismiss
+
+    private func med(_ v: [Double]) -> Double { let x = v.sorted(); return x.isEmpty ? 0 : x[x.count / 2] }
+    private func sec(_ v: Double) -> String { String(format: "%.1f sn", v).replacingOccurrences(of: ".", with: ",") }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Picker("Kip", selection: $s.toolMode) {
+                        Text("Doğrudan").tag("direct")
+                        Text("Ön-seçim").tag("jev_pre")
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: s.toolMode) { _, _ in a.restart() }
+                } footer: { Text("Bağlıyken kip değişince oturum yeniden başlar (konuşma belleği sıfırlanır).") }
+
+                Section("Cevap süreleri (medyan, son 30)") {
+                    let keys = a.timingHist.keys.sorted()
+                    if keys.isEmpty { Text("Henüz ölçüm yok.").foregroundStyle(.secondary) }
+                    ForEach(keys, id: \.self) { k in
+                        let v = a.timingHist[k] ?? []
+                        let parts = k.split(separator: "|")
+                        LabeledContent("\(parts.first == "jev_pre" ? "Ön-seçim" : "Doğrudan") · \(parts.last ?? "")") {
+                            Text("ilk ses \(sec(med(v.map { $0[0] }))) · bitiş \(sec(med(v.map { $0[1] }))) (\(v.count))")
+                                .font(.caption.monospacedDigit())
+                        }
+                    }
+                    if !keys.isEmpty { Button("Sıfırla", role: .destructive) { a.resetTimingHist() } }
+                }
+
+                Section("Jev") {
+                    let picks = a.jevTraces.compactMap(\.pick)
+                    LabeledContent("Harcama", value: String(format: "$%.4f / $%.0f · %d çağrı", JevLedger.totalUSD, JevLedger.budgetUSD, JevLedger.calls))
+                    if !picks.isEmpty {
+                        LabeledContent("Ort. süre", value: "\(picks.map(\.ms).reduce(0, +) / picks.count) ms")
+                        LabeledContent("Ort. güven", value: "%\(Int(picks.map(\.confidence).reduce(0, +) / Double(picks.count) * 100))")
+                        LabeledContent("Önceden sorulan", value: "\(picks.filter(\.speculative).count)/\(picks.count)")
+                    }
+                }
+
+                Section("Son kararlar") {
+                    if a.jevTraces.isEmpty { Text("Ön-seçim kipinde konuşunca burada görünür.").foregroundStyle(.secondary) }
+                    ForEach(a.jevTraces) { t in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("“\(t.said)”").font(.footnote).italic()
+                            if let p = t.pick {
+                                HStack {
+                                    Text(p.choice == Jev.none ? "araç yok" : Assistant.label(p.choice)).bold()
+                                    Spacer()
+                                    Text("%\(Int(p.confidence * 100)) · \(p.ms) ms\(p.speculative ? " · önceden" : "")")
+                                        .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                                }
+                                GeometryReader { g in
+                                    HStack(spacing: 0) {
+                                        ForEach(p.probabilities.sorted { $0.value > $1.value }.prefix(3), id: \.key) { kv in
+                                            Rectangle().fill(kv.key == p.choice ? Palette.accent : Palette.user.opacity(0.6))
+                                                .frame(width: g.size.width * kv.value)
+                                        }
+                                    }
+                                }
+                                .frame(height: 4).clipShape(Capsule())
+                            } else if let e = t.error {
+                                Text(e).font(.caption).foregroundStyle(.red)
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Test")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Bitti") { dismiss() } } }
+        }
+        .preferredColorScheme(.dark)
     }
 }

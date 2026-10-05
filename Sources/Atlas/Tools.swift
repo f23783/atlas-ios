@@ -174,6 +174,11 @@ enum Pricing {
         return v / 1_000_000
     }
 
+    /// gemini-3.5-transcribe-live: ses girdi $3,50 / 1M, metin çıktı $21 / 1M (paralel döküm, ön-seçim kipi).
+    static func usdTranscribe(_ u: [String: Any]) -> Double {
+        (Double((u["promptTokenCount"] as? Int) ?? 0) * 3.5 + Double((u["responseTokenCount"] as? Int) ?? 0) * 21) / 1_000_000
+    }
+
     static func refreshRate() async {
         guard let url = URL(string: "https://www.tcmb.gov.tr/kurlar/today.xml"),
               let (data, _) = try? await URLSession.shared.data(from: url),

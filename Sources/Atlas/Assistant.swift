@@ -2,6 +2,14 @@ import AVFoundation
 import Foundation
 import UIKit
 
+struct JevTrace: Identifiable {
+    let id = UUID()
+    let time = Date()
+    let said: String
+    let pick: JevPick?
+    let error: String?
+}
+
 struct Turn: Identifiable {
     let id = UUID()
     var user = ""
@@ -18,7 +26,7 @@ final class Assistant: ObservableObject, LiveClientDelegate, ToolHost {
 
     @Published var conn: Conn = .idle
     @Published var turns: [Turn] = []
-    @Published var micOn = true { didSet { audio.muted = !micOn } }
+    @Published var micOn = true { didSet { audio.muted = !micOn; micToggled() } }
     @Published var error: String?
     @Published var sessionTRY: Double = 0
     @Published var todayTRY: Double = 0
@@ -27,6 +35,21 @@ final class Assistant: ObservableObject, LiveClientDelegate, ToolHost {
     /// Ekranda bekleyen Evet/Hayır sorusu (Kestirme onayı).
     @Published var pendingConfirm: (title: String, message: String)?
     private var confirmCont: CheckedContinuation<Bool, Never>?
+
+    // Test paneli verisi
+    @Published var jevTraces: [JevTrace] = []
+    @Published var timingHist: [String: [[Double]]] = (UserDefaults.standard.dictionary(forKey: "timingHist") as? [String: [[Double]]]) ?? [:]
+
+    // Ön-seçim: istemci sırası + paralel döküm
+    private let scribe = Scribe()
+    private var preMode: Bool { settings.toolMode == "jev_pre" }
+    private var activeMode = "direct" // bağlantı anındaki kip (ayar sonradan değişse de oturum bunu kullanır)
+    private var clientTurnOpen = false
+    private var preroll: [Data] = []
+    private var finalText = ""
+    private var closeTimer: Task<Void, Never>?
+    private var specTimer: Task<Void, Never>?
+    private var speculative: (key: String, task: Task<JevPick?, Never>)?
     private var poller: Task<Void, Never>?
 
     let audio = AudioIO()
@@ -52,7 +75,15 @@ final class Assistant: ObservableObject, LiveClientDelegate, ToolHost {
         Timers.shared.host = self
         todayTRY = Ledger.todayUSD * Pricing.usdTry
         audio.onChunk = { [weak self] data in
-            Task { @MainActor in self?.client?.sendAudio(data) }
+            Task { @MainActor in self?.routeMic(data) }
+        }
+        scribe.onInterim = { [weak self] t in self?.onInterim(t) }
+        scribe.onFinal = { [weak self] t in self?.onFinal(t) }
+        scribe.onUsage = { [weak self] u in
+            guard let self else { return }
+            let usd = Pricing.usdTranscribe(u)
+            self.sessionTRY += usd * Pricing.usdTry
+            self.todayTRY = Ledger.add(usd) * Pricing.usdTry
         }
         NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
             let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
@@ -69,7 +100,9 @@ final class Assistant: ObservableObject, LiveClientDelegate, ToolHost {
 
     func start() {
         guard !settings.geminiKey.isEmpty else { error = "Önce Ayarlar'dan Gemini API anahtarını gir."; Log.w("başlat: anahtar yok"); return }
-        Log.i("başlat: model=\(settings.model) ses=\(settings.voice) bellek=\(settings.contextLimit)")
+        if preMode && settings.typesafeKey.isEmpty { error = "Ön-seçim kipi için Ayarlar'dan TypeSafe (Jev) anahtarını gir."; return }
+        activeMode = settings.toolMode
+        Log.i("başlat: model=\(settings.model) ses=\(settings.voice) bellek=\(settings.contextLimit) kip=\(activeMode)")
         AVAudioApplication.requestRecordPermission { granted in
             Task { @MainActor in
                 guard granted else { self.error = "Mikrofon izni yok: Ayarlar → Atlas → Mikrofon."; Log.e("mikrofon izni yok"); return }
@@ -92,14 +125,24 @@ final class Assistant: ObservableObject, LiveClientDelegate, ToolHost {
                         try? await Task.sleep(for: .milliseconds(100))
                     }
                 }
+                if self.activeMode == "jev_pre" { self.scribe.start(key: self.settings.geminiKey) }
                 self.connect(.connecting)
             }
         }
     }
 
+    /// Kip ya da ses değişince: oturumu yeni ayarla yeniden aç.
+    func restart() {
+        guard conn != .idle else { return }
+        stop()
+        Task { try? await Task.sleep(for: .milliseconds(300)); self.start() }
+    }
+
     func stop() {
         Log.i("durdur")
         stopping = true
+        scribe.stop()
+        resetClientTurn()
         watchdog?.cancel()
         poller?.cancel()
         speaking = false
@@ -124,18 +167,24 @@ final class Assistant: ObservableObject, LiveClientDelegate, ToolHost {
             ],
             "systemInstruction": ["parts": [["text": Catalog.systemInstruction]], "role": "user"],
             "tools": [["functionDeclarations": Tools.declarations(shortcuts: settings.shortcuts)]],
-            "inputAudioTranscription": [:] as [String: Any],
             "outputAudioTranscription": [:] as [String: Any],
             // 15 dk sınırını kaldırır ve maliyete tavan koyar (Live her turda tüm bağlamı faturalar).
             "contextWindowCompression": ["triggerTokens": String(settings.contextLimit), "slidingWindow": [:] as [String: Any]],
         ]
         setup["sessionResumption"] = handle.map { ["handle": $0] } ?? [:] as [String: Any]
+        if activeMode == "jev_pre" {
+            // Sırayı istemci tutar; kullanıcı dökümü paralel döküm modelinden gelir (ajanınki geç ve tekrar olurdu).
+            setup["realtimeInputConfig"] = ["automaticActivityDetection": ["disabled": true]]
+        } else {
+            setup["inputAudioTranscription"] = [:] as [String: Any]
+        }
         return setup
     }
 
     private func connect(_ phase: Conn) {
         Log.i("bağlanıyor (\(phase.rawValue))\(handle != nil ? ", devam anahtarıyla" : "")")
         conn = phase
+        resetClientTurn() // yeni bağlantıda sunucu açık sırayı bilmez
         client?.delegate = nil
         client?.close()
         let c = LiveClient(apiKey: settings.geminiKey, setup: setupMessage())
@@ -276,7 +325,129 @@ final class Assistant: ObservableObject, LiveClientDelegate, ToolHost {
         endTurn(cut: false)
         turns.append(Turn(user: t))
         tStart = Date(); typed = true; tFirst = nil
-        client?.sendText(t)
+        guard activeMode == "jev_pre" else { client?.sendText(t); return }
+        Task {
+            let p = await self.jevPick(t)
+            // Elle sırada metni activityStart/End ile sarmak 1007 veriyor: ipucu bağlam olarak, metin düz (masaüstü deneyi).
+            if let p, let h = Jev.hint(for: p) { self.sendHint(h) }
+            self.client?.sendText(t)
+        }
+    }
+
+    // MARK: Ön-seçim (istemci sırası)
+
+    private func routeMic(_ data: Data) {
+        guard activeMode == "jev_pre" else { client?.sendAudio(data); return }
+        scribe.send(data)
+        if clientTurnOpen { client?.sendAudio(data) } else {
+            preroll.append(data)
+            if preroll.count > 15 { preroll.removeFirst() } // 15 × 100 ms: konuşmanın ilk hecesi kaybolmasın
+        }
+    }
+
+    private func onInterim(_ text: String) {
+        guard conn == .open, micOn else { return }
+        closeTimer?.cancel(); closeTimer = nil // kesin metinden sonra konuşma sürdüyse sırayı kapatma
+        if !clientTurnOpen {
+            clientTurnOpen = true
+            client?.send(["realtimeInput": ["activityStart": [:] as [String: Any]]]) // model konuşuyorsa keser (söze girme)
+            for b in preroll { client?.sendAudio(b) }
+            Log.i("sıra açıldı (\"\(text)\", tampon \(preroll.count))")
+            preroll.removeAll()
+            endTurn(cut: false)
+        }
+        let full = finalText + text
+        current { $0.user = full }
+        specTimer?.cancel()
+        specTimer = Task {
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+            self.prefetch(full)
+        }
+    }
+
+    private func onFinal(_ text: String) {
+        guard clientTurnOpen else { return }
+        finalText += text
+        current { $0.user = self.finalText }
+        closeTimer?.cancel()
+        closeTimer = Task {
+            try? await Task.sleep(for: .milliseconds(200)) // cümle ortası duraklama payı
+            guard !Task.isCancelled else { return }
+            await self.closeTurn()
+        }
+    }
+
+    private func prefetch(_ text: String) {
+        let key = Jev.normalize(text)
+        guard !key.isEmpty, speculative?.key != key else { return }
+        speculative = (key, Task { await self.jevPick(text, record: false) })
+    }
+
+    private func closeTurn() async {
+        closeTimer = nil
+        specTimer?.cancel()
+        let text = finalText.trimmingCharacters(in: .whitespaces)
+        finalText = ""
+        if !text.isEmpty {
+            var p: JevPick?
+            if let s = speculative, s.key == Jev.normalize(text) {
+                p = await s.task.value
+                p?.speculative = true
+                if let p { record(JevTrace(said: text, pick: p, error: nil)) }
+            } else {
+                p = await jevPick(text)
+            }
+            speculative = nil
+            if let p, let h = Jev.hint(for: p) { sendHint(h) }
+        }
+        clientTurnOpen = false
+        client?.send(["realtimeInput": ["activityEnd": [:] as [String: Any]]])
+        Log.i("sıra kapandı: \"\(text)\"")
+    }
+
+    private func sendHint(_ h: String) {
+        // clientContent: "konuşmayı tetiklemeyen bağlam" (masaüstü deneyinde 8/8; realtime metin notu takılıyordu)
+        client?.send(["clientContent": ["turns": [["role": "user", "parts": [["text": h]]]], "turnComplete": false]])
+    }
+
+    private func jevPick(_ said: String, record rec: Bool = true) async -> JevPick? {
+        do {
+            let p = try await Jev.pick(key: settings.typesafeKey, said: said, options: Jev.options(shortcuts: settings.shortcuts))
+            if rec { record(JevTrace(said: said, pick: p, error: nil)) }
+            return p
+        } catch {
+            Log.w("Jev: \(error.localizedDescription) — ipucusuz devam")
+            record(JevTrace(said: said, pick: nil, error: error.localizedDescription))
+            return nil
+        }
+    }
+
+    private func record(_ t: JevTrace) {
+        jevTraces.insert(t, at: 0)
+        if jevTraces.count > 50 { jevTraces.removeLast() }
+        if let p = t.pick {
+            Log.i("Jev → \(p.choice) %\(Int(p.confidence * 100)) \(p.ms) ms\(p.speculative ? " (önceden)" : "")")
+            current { $0.chips.append(p.choice == Jev.none ? "Jev → araç yok" : "Jev → \(Self.label(p.choice)) %\(Int(p.confidence * 100))") }
+        }
+    }
+
+    private func resetClientTurn() {
+        clientTurnOpen = false
+        preroll.removeAll()
+        finalText = ""
+        closeTimer?.cancel(); closeTimer = nil
+        specTimer?.cancel(); specTimer = nil
+        speculative = nil
+    }
+
+    func micToggled() {
+        if !micOn, activeMode == "jev_pre", clientTurnOpen { Task { await closeTurn() } }
+    }
+
+    func resetTimingHist() {
+        timingHist = [:]
+        UserDefaults.standard.removeObject(forKey: "timingHist")
     }
 
     // MARK: Transkript
@@ -322,6 +493,12 @@ final class Assistant: ObservableObject, LiveClientDelegate, ToolHost {
         let text = String(format: "ilk ses %.1f sn · %@ %.1f sn — %@", first, cut ? "kesildi" : "bitiş", total, typed ? "yazılı" : "sustuktan sonra")
             .replacingOccurrences(of: ".", with: ",")
         if let i = turns.lastIndex(where: { !$0.model.isEmpty }) { turns[i].timing = text }
+        if !cut {
+            let key = "\(activeMode)|\(typed ? "yazılı" : "sesli")"
+            timingHist[key, default: []].append([first, total])
+            timingHist[key] = Array(timingHist[key]!.suffix(30))
+            UserDefaults.standard.set(timingHist, forKey: "timingHist")
+        }
     }
 }
 
