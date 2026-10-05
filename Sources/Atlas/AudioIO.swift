@@ -9,6 +9,8 @@ final class AudioIO {
     private(set) var inLevel: Float = 0
     private(set) var outLevel: Float = 0
     private(set) var lastVoiceAt: Date?
+    /// Mikrofondan gelen tampon sayısı (bekçi: ilk açılışta hiç gelmezse motor yeniden başlatılır).
+    private(set) var buffers = 0
     static let voiceLevel: Float = 0.02
 
     private let engine = AVAudioEngine()
@@ -38,8 +40,14 @@ final class AudioIO {
             try input.setVoiceProcessingEnabled(true)
             engine.attach(player)
             engine.connect(player, to: engine.mainMixerNode, format: outFormat)
+            // Isıtma: yankı engelleme açıldıktan sonra giriş biçimi motor bir kez çalışınca doğru raporlanıyor.
+            // (Belirti: uygulama açılışındaki İLK başlatmada mikrofon sessiz, kapat-aç sonrası çalışıyordu.)
+            engine.prepare()
+            try engine.start()
+            engine.stop()
             configured = true
         }
+        buffers = 0
         let inFormat = input.outputFormat(forBus: 0)
         converter = AVAudioConverter(from: inFormat, to: micFormat)
         Log.i("mikrofon: \(Int(inFormat.sampleRate)) Hz, \(inFormat.channelCount) kanal → 16 kHz; rota: \(session.currentRoute.outputs.map(\.portName).joined(separator: ","))")
@@ -63,7 +71,15 @@ final class AudioIO {
 
     // MARK: Mikrofon
 
+    /// Mikrofon sessiz kaldıysa: dinleyiciyi yeniden kur, motoru yeniden başlat (ses oturumu açık kalır).
+    func restartInput() throws {
+        engine.stop()
+        engine.inputNode.removeTap(onBus: 0)
+        try start()
+    }
+
     private func handleMic(_ buffer: AVAudioPCMBuffer) {
+        buffers += 1
         // Seviye (orb + konuşma algısı)
         if let ch = buffer.floatChannelData?[0] {
             let n = Int(buffer.frameLength)

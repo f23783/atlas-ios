@@ -29,7 +29,7 @@ targets:
         NSLocationWhenInUseUsageDescription: "Hava durumunu bulunduğun yere göre söylemek için."
         NSCalendarsFullAccessUsageDescription: "Takvimini okuyup etkinlik ekleyebilmek için."
         NSRemindersFullAccessUsageDescription: "Anımsatıcılarını okuyup ekleyebilmek ve tamamlayabilmek için."
-        CFBundleShortVersionString: "0.5"
+        CFBundleShortVersionString: "0.6"
         # Kilitliyken konuşma (ücretsiz hesapta da var; AtlasProbe ile kanıtlandı 2026-10-05).
         UIBackgroundModes: [audio]
         LSApplicationQueriesSchemes: [shortcuts]

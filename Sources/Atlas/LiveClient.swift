@@ -25,6 +25,13 @@ final class LiveClient: NSObject, URLSessionWebSocketDelegate {
     private let setup: [String: Any]
     private let apiKey: String
     private var closed = false
+    // Kurulum tamamlanana kadar başka mesaj gitmesin: mikrofon soket açılmadan başlıyor, kuyruktaki ses parçaları
+    // kurulumdan ÖNCE giderse sunucu 1007 "First message in the stream must be a setup message" ile kapatıyor.
+    private var ready = false
+    private var pending: [[String: Any]] = []
+    private let lock = NSLock()
+    /// Son gönderilen mesajın türü (kapanış günlüğü için: hatayı neyin tetiklediği).
+    private(set) var lastSent = "-"
 
     init(apiKey: String, setup: [String: Any]) {
         self.apiKey = apiKey
@@ -51,6 +58,20 @@ final class LiveClient: NSObject, URLSessionWebSocketDelegate {
     // MARK: Gönderme
 
     func send(_ obj: [String: Any]) {
+        if obj["setup"] == nil {
+            lock.lock()
+            if !ready {
+                // ses bekletilmez (bayatlar), diğerleri kurulumdan sonra sırayla gider
+                if (obj["realtimeInput"] as? [String: Any])?["audio"] == nil { pending.append(obj) }
+                lock.unlock()
+                return
+            }
+            lock.unlock()
+        }
+        let kind = obj.keys.first.map { k in
+            k == "realtimeInput" ? "realtimeInput." + ((obj[k] as? [String: Any])?.keys.first ?? "?") : k
+        } ?? "?"
+        if kind != "realtimeInput.audio" { lastSent = kind }
         guard let task, let data = try? JSONSerialization.data(withJSONObject: obj),
               let text = String(data: data, encoding: .utf8) else { return }
         task.send(.string(text)) { err in if let err { Log.e("gönderilemedi: \(err.localizedDescription)") } }
@@ -83,7 +104,11 @@ final class LiveClient: NSObject, URLSessionWebSocketDelegate {
                 }
                 if let data, let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
                     Task { @MainActor in
-                        if obj["setupComplete"] != nil { self.delegate?.liveDidSetup() }
+                        if obj["setupComplete"] != nil {
+                            self.lock.lock(); self.ready = true; let q = self.pending; self.pending.removeAll(); self.lock.unlock()
+                            q.forEach { self.send($0) }
+                            self.delegate?.liveDidSetup()
+                        }
                         self.delegate?.liveDidReceive(message: obj)
                     }
                 }

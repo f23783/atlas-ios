@@ -114,6 +114,7 @@ final class Assistant: ObservableObject, LiveClientDelegate, ToolHost {
                     return
                 }
                 self.audio.muted = !self.micOn
+                self.watchMic()
                 self.stopping = false
                 self.reconnects = 0
                 self.handle = nil
@@ -144,6 +145,23 @@ final class Assistant: ObservableObject, LiveClientDelegate, ToolHost {
                     guard !self.stopping else { return }
                     self.connect(.connecting)
                 }
+            }
+        }
+    }
+
+    /// Mikrofon bekçisi: 1,5 sn'de hiç tampon gelmezse girişi yeniden başlat (bir kez), yine gelmezse söyle.
+    private func watchMic(attempt: Int = 0) {
+        Task {
+            try? await Task.sleep(for: .milliseconds(1500))
+            guard self.conn != .idle || attempt == 0, !self.stopping else { return }
+            let n = self.audio.buffers
+            if n > 0 { if attempt > 0 { Log.i("mikrofon: yeniden başlatma sonrası çalışıyor") }; return }
+            if attempt == 0 {
+                Log.w("mikrofon: 1,5 sn'de ses gelmedi — giriş yeniden başlatılıyor")
+                do { try self.audio.restartInput(); self.watchMic(attempt: 1) } catch { Log.e("mikrofon yeniden başlatılamadı: \(error)") }
+            } else {
+                Log.e("mikrofon: yeniden başlatmaya rağmen ses yok")
+                self.error = "Mikrofondan ses gelmiyor. Orb'a dokunup kapatıp yeniden aç."
             }
         }
     }
@@ -243,12 +261,22 @@ final class Assistant: ObservableObject, LiveClientDelegate, ToolHost {
     func liveDidSetup() { conn = .open; error = nil; Log.i("kurulum tamam (setupComplete)") }
 
     func liveDidClose(code: Int, reason: String) {
+        let lastSentKind = client?.lastSent ?? "-"
         client = nil
         if stopping { return }
         lastReason = reason.isEmpty ? "kod \(code)" : reason
-        Log.e("bağlantı kapandı: kod=\(code) sebep=\(reason.isEmpty ? "-" : reason) (açık kaldı \(String(format: "%.1f", Date().timeIntervalSince(openedAt))) sn)")
+        Log.e("bağlantı kapandı: kod=\(code) sebep=\(reason.isEmpty ? "-" : reason) (açık kaldı \(String(format: "%.1f", Date().timeIntervalSince(openedAt))) sn, son gönderilen: \(lastSentKind))")
         // Arama açıkken kota hatası: anahtarın projesinde arama kotası yok (masaüstünde ücretsiz katmanda böyleydi).
         // Bağlantıyı öldürme; aramayı bu oturum için kapat, hemen yeniden bağlan.
+        // Arama açıkken konuşma ortasında "invalid argument": telefonda model aramaya kalkınca görüldü (2026-10-05, sebep doğrulanmadı).
+        // Oturumu öldürme: aramayı bu oturumda kapat, devam anahtarıyla kaldığı yerden sür.
+        if searchOn && lastReason.lowercased().contains("invalid argument") && Date().timeIntervalSince(openedAt) > 2 {
+            searchBlocked = true
+            Log.w("arama açıkken 'invalid argument': Google araması bu oturumda kapatıldı, kaldığı yerden devam")
+            current { $0.chips.append("internet araması bu oturumda kapatıldı (hata)") }
+            connect(.reconnecting)
+            return
+        }
         if searchOn && lastReason.lowercased().contains("quota") {
             searchBlocked = true
             Log.w("arama kotası yok: Google araması bu oturumda kapatıldı, yeniden bağlanılıyor")
