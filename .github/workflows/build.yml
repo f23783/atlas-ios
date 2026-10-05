@@ -15,19 +15,21 @@ jobs:
           xcodebuild -version
       - name: Proje üret
         run: brew install xcodegen && xcodegen generate
-      - name: Derle (imzasız)
+      - name: Derle (imzasız) ve paketle
         run: |
-          xcodebuild -project AtlasProbe.xcodeproj -scheme AtlasProbe -configuration Release \
-            -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
-      - name: IPA paketle
-        run: |
-          mkdir Payload
-          cp -R build/Build/Products/Release-iphoneos/AtlasProbe.app Payload/
-          zip -qry AtlasProbe.ipa Payload
-          ls -la AtlasProbe.ipa
+          for app in Atlas AtlasProbe; do
+            xcodebuild -project Atlas.xcodeproj -scheme "$app" -configuration Release \
+              -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
+              CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build > "build-$app.log" 2>&1 \
+              || { grep -E "error:|fatal" -A4 "build-$app.log" | head -80; exit 1; }
+            grep -c "warning:" "build-$app.log" || true
+            rm -rf Payload && mkdir Payload
+            cp -R "build/Build/Products/Release-iphoneos/$app.app" Payload/
+            zip -qry "$app.ipa" Payload
+          done
+          ls -la *.ipa
       - uses: actions/upload-artifact@v4
         with:
-          name: AtlasProbe-ipa
-          path: AtlasProbe.ipa
+          name: ipa
+          path: "*.ipa"
           retention-days: 14

@@ -1,0 +1,296 @@
+import AVFoundation
+import Foundation
+import UIKit
+
+struct Turn: Identifiable {
+    let id = UUID()
+    var user = ""
+    var model = ""
+    var chips: [String] = []
+    var timing: String?
+    var cut = false
+}
+
+/// Oturumun tek sahibi (masaüstündeki LiveSession + ipc + app.js'in iPhone karşılığı).
+@MainActor
+final class Assistant: ObservableObject, LiveClientDelegate {
+    enum Conn: String { case idle = "Kapalı", connecting = "Bağlanıyor", open = "Bağlı", reconnecting = "Yeniden bağlanıyor" }
+
+    @Published var conn: Conn = .idle
+    @Published var turns: [Turn] = []
+    @Published var micOn = true { didSet { audio.muted = !micOn } }
+    @Published var error: String?
+    @Published var sessionTRY: Double = 0
+    @Published var todayTRY: Double = 0
+    /// Model sesi çalıyor mu (AudioIO yayınlamaz; ekrandaki "Konuşuyor" yazısı için 10 Hz'de yansıtılır).
+    @Published var speaking = false
+    private var poller: Task<Void, Never>?
+
+    let audio = AudioIO()
+    private let settings: AppSettings
+    private var client: LiveClient?
+    private var handle: String?
+    private var reconnects = 0
+    private var openedAt = Date.distantPast
+    private var stopping = false
+    private var watchdog: Task<Void, Never>?
+    private var lastReason = ""
+
+    // Süre ölçümü (masaüstündeki timing ile aynı cetvel): başlangıç = sustuğun an / Gönder anı.
+    private var tStart: Date?
+    private var tFirst: Date?
+    private var typed = false
+    private var draining = false
+
+    private static let fatal = try! NSRegularExpression(pattern: "quota|billing|api key|permission|not found|not supported|invalid", options: .caseInsensitive)
+
+    init(settings: AppSettings) {
+        self.settings = settings
+        todayTRY = Ledger.todayUSD * Pricing.usdTry
+        audio.onChunk = { [weak self] data in
+            Task { @MainActor in self?.client?.sendAudio(data) }
+        }
+        NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
+            let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
+            let ended = raw.flatMap(AVAudioSession.InterruptionType.init(rawValue:)) == .ended
+            Task { @MainActor in if ended { self?.resumeAudio() } }
+        }
+        Task { await Pricing.refreshRate(); self.todayTRY = Ledger.todayUSD * Pricing.usdTry }
+    }
+
+    // MARK: Bağlan / kes
+
+    func toggle() { conn == .idle ? start() : stop() }
+
+    func start() {
+        guard !settings.geminiKey.isEmpty else { error = "Önce Ayarlar'dan Gemini API anahtarını gir."; return }
+        AVAudioApplication.requestRecordPermission { granted in
+            Task { @MainActor in
+                guard granted else { self.error = "Mikrofon izni yok: Ayarlar → Atlas → Mikrofon."; return }
+                do { try self.audio.start() } catch { self.error = "Ses başlatılamadı: \(error.localizedDescription)"; return }
+                self.audio.muted = !self.micOn
+                self.stopping = false
+                self.reconnects = 0
+                self.handle = nil
+                self.sessionTRY = 0
+                UIApplication.shared.isIdleTimerDisabled = true
+                self.poller?.cancel()
+                self.poller = Task {
+                    while !Task.isCancelled {
+                        let sp = self.audio.speaking
+                        if sp != self.speaking { self.speaking = sp }
+                        try? await Task.sleep(for: .milliseconds(100))
+                    }
+                }
+                self.connect(.connecting)
+            }
+        }
+    }
+
+    func stop() {
+        stopping = true
+        watchdog?.cancel()
+        poller?.cancel()
+        speaking = false
+        client?.close()
+        client = nil
+        audio.stop()
+        conn = .idle
+        UIApplication.shared.isIdleTimerDisabled = false
+    }
+
+    private func resumeAudio() {
+        guard conn != .idle else { return }
+        try? audio.start()
+    }
+
+    private func setupMessage() -> [String: Any] {
+        var setup: [String: Any] = [
+            "model": "models/\(settings.model)",
+            "generationConfig": [
+                "responseModalities": ["AUDIO"],
+                "speechConfig": ["voiceConfig": ["prebuiltVoiceConfig": ["voiceName": settings.voice]]],
+            ],
+            "systemInstruction": ["parts": [["text": Catalog.systemInstruction]], "role": "user"],
+            "tools": [["functionDeclarations": Tools.all.map(\.declaration)]],
+            "inputAudioTranscription": [:] as [String: Any],
+            "outputAudioTranscription": [:] as [String: Any],
+            // 15 dk sınırını kaldırır ve maliyete tavan koyar (Live her turda tüm bağlamı faturalar).
+            "contextWindowCompression": ["triggerTokens": String(settings.contextLimit), "slidingWindow": [:] as [String: Any]],
+        ]
+        setup["sessionResumption"] = handle.map { ["handle": $0] } ?? [:] as [String: Any]
+        return setup
+    }
+
+    private func connect(_ phase: Conn) {
+        conn = phase
+        client?.delegate = nil
+        client?.close()
+        let c = LiveClient(apiKey: settings.geminiKey, setup: setupMessage())
+        c.delegate = self
+        client = c
+        c.connect()
+    }
+
+    // MARK: LiveClientDelegate
+
+    func liveDidOpen() { openedAt = Date() }
+
+    func liveDidSetup() { conn = .open; error = nil }
+
+    func liveDidClose(code: Int, reason: String) {
+        client = nil
+        if stopping { return }
+        lastReason = reason.isEmpty ? "kod \(code)" : reason
+        let r = NSRange(lastReason.startIndex..., in: lastReason)
+        if code == 1008 || Self.fatal.firstMatch(in: lastReason, range: r) != nil {
+            error = "Bağlantı kapandı: \(lastReason)"
+            stop()
+            return
+        }
+        // Açılır açılmaz ölen bağlantı: devam anahtarı bozuk durumu geri getiriyor olabilir → temiz başla.
+        if handle != nil && Date().timeIntervalSince(openedAt) < 3 { handle = nil }
+        reconnects += 1
+        if reconnects > 5 {
+            error = "Yeniden bağlanılamadı (\(lastReason)). Ayarlar'dan başka model dene."
+            stop()
+            return
+        }
+        conn = .reconnecting
+        let delay = min(0.5 * pow(2, Double(reconnects - 1)), 8)
+        Task {
+            try? await Task.sleep(for: .seconds(delay))
+            if !self.stopping { self.connect(.reconnecting) }
+        }
+    }
+
+    func liveDidReceive(message m: [String: Any]) {
+        if let u = m["usageMetadata"] as? [String: Any] {
+            let usd = Pricing.usd(u)
+            sessionTRY += usd * Pricing.usdTry
+            todayTRY = Ledger.add(usd) * Pricing.usdTry
+        }
+        if let r = m["sessionResumptionUpdate"] as? [String: Any], (r["resumable"] as? Bool) == true, let h = r["newHandle"] as? String {
+            handle = h
+        }
+        if m["goAway"] != nil { connect(.reconnecting); return } // sunucu birazdan kapatacak: devam anahtarıyla yenile
+        if let tc = m["toolCall"] as? [String: Any], let calls = tc["functionCalls"] as? [[String: Any]] {
+            watchdog?.cancel()
+            Task { await handleTools(calls) }
+        }
+        guard let sc = m["serverContent"] as? [String: Any] else { return }
+        reconnects = 0
+        if sc["modelTurn"] != nil || sc["outputTranscription"] != nil || sc["interrupted"] != nil { watchdog?.cancel() }
+
+        if (sc["interrupted"] as? Bool) == true {
+            audio.flush()
+            finishTiming(cut: true)
+            endTurn(cut: true)
+        }
+        if let parts = (sc["modelTurn"] as? [String: Any])?["parts"] as? [[String: Any]] {
+            for p in parts {
+                if let b64 = (p["inlineData"] as? [String: Any])?["data"] as? String, let d = Data(base64Encoded: b64) {
+                    audio.play(pcm16: d)
+                    onFirstAudio()
+                }
+            }
+        }
+        if let t = (sc["inputTranscription"] as? [String: Any])?["text"] as? String { append(user: t) }
+        if let t = (sc["outputTranscription"] as? [String: Any])?["text"] as? String { append(model: t) }
+        if (sc["turnComplete"] as? Bool) == true {
+            if tFirst != nil { draining = true; waitDrain() }
+            endTurn(cut: false)
+        }
+    }
+
+    // MARK: Araçlar + bekçi
+
+    private func handleTools(_ calls: [[String: Any]]) async {
+        var responses: [[String: Any]] = []
+        for call in calls {
+            let name = call["name"] as? String ?? "?"
+            current { $0.chips.append("araç: \(name == "get_current_time" ? "saat" : name)") }
+            let result = await Tools.run(call)
+            responses.append(["id": call["id"] ?? "", "name": name, "response": result])
+        }
+        client?.sendToolResponses(responses)
+        // Bekçi: araç sonucundan sonra model 6 sn susarsa bir kez dürt (masaüstünde 50 denemede 7 kez gerekti).
+        watchdog?.cancel()
+        watchdog = Task {
+            try? await Task.sleep(for: .seconds(6))
+            guard !Task.isCancelled, self.conn == .open else { return }
+            self.client?.sendText("[Sistem bildirimi — kullanıcı söylemedi] Araç sonucu geldi. Şimdi kullanıcıya kısaca sesli cevap ver.")
+            self.current { $0.chips.append("bekçi dürttü") }
+        }
+    }
+
+    // MARK: Metin girişi
+
+    func send(text: String) {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty, conn == .open else { return }
+        endTurn(cut: false)
+        turns.append(Turn(user: t))
+        tStart = Date(); typed = true; tFirst = nil
+        client?.sendText(t)
+    }
+
+    // MARK: Transkript
+
+    private var turnOpen = false
+
+    private func current(_ edit: (inout Turn) -> Void) {
+        if !turnOpen || turns.isEmpty { turns.append(Turn()); turnOpen = true }
+        edit(&turns[turns.count - 1])
+    }
+
+    private func append(user t: String) { current { $0.user += t } }
+    private func append(model t: String) { current { $0.model += t } }
+
+    private func endTurn(cut: Bool) {
+        if cut, !turns.isEmpty { turns[turns.count - 1].cut = true }
+        turnOpen = false
+        if turns.count > 60 { turns.removeFirst(turns.count - 60) }
+    }
+
+    // MARK: Süre ölçümü
+
+    private func onFirstAudio() {
+        guard tFirst == nil else { return }
+        tFirst = Date()
+        if !typed {
+            // 20 sn'den eski ses = bu cevap kullanıcıya değil (bekçi vb.): ölçme
+            if let v = audio.lastVoiceAt, tFirst!.timeIntervalSince(v) < 20 { tStart = v } else { tStart = nil }
+        }
+    }
+
+    private func waitDrain() {
+        Task {
+            while self.draining && self.audio.speaking { try? await Task.sleep(for: .milliseconds(50)) }
+            if self.draining { self.finishTiming(cut: false) }
+        }
+    }
+
+    private func finishTiming(cut: Bool) {
+        defer { tStart = nil; tFirst = nil; typed = false; draining = false }
+        guard let s = tStart, let f = tFirst else { return }
+        let first = f.timeIntervalSince(s), total = Date().timeIntervalSince(s)
+        let text = String(format: "ilk ses %.1f sn · %@ %.1f sn — %@", first, cut ? "kesildi" : "bitiş", total, typed ? "yazılı" : "sustuktan sonra")
+            .replacingOccurrences(of: ".", with: ",")
+        if let i = turns.lastIndex(where: { !$0.model.isEmpty }) { turns[i].timing = text }
+    }
+}
+
+/// Günlük harcama (USD), UserDefaults'ta.
+enum Ledger {
+    private static var key: String {
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; f.timeZone = TimeZone(identifier: "Europe/Istanbul")
+        return "usd-" + f.string(from: Date())
+    }
+    static var todayUSD: Double { UserDefaults.standard.double(forKey: key) }
+    static func add(_ usd: Double) -> Double {
+        let v = todayUSD + usd
+        UserDefaults.standard.set(v, forKey: key)
+        return v
+    }
+}

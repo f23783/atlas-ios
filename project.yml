@@ -1,17 +1,48 @@
 # XcodeGen proje tanımı: Mac olmadan yazılır, GitHub Actions'ın macOS sunucusunda .xcodeproj'a çevrilir.
-name: AtlasProbe
+name: Atlas
 options:
   bundleIdPrefix: com.f23783
   deploymentTarget:
     iOS: "17.0"
+settings:
+  base:
+    TARGETED_DEVICE_FAMILY: "1"
+    SWIFT_VERSION: "5.0"
+    # İmzayı telefona kurarken iLoader/SideStore, Fido'nun (ayrı) Apple ID'siyle atar.
+    CODE_SIGNING_ALLOWED: "NO"
+    CODE_SIGNING_REQUIRED: "NO"
+    CODE_SIGN_IDENTITY: ""
 targets:
+  Atlas:
+    type: application
+    platform: iOS
+    sources: [Sources/Atlas]
+    scheme: {}
+    info:
+      path: Sources/Atlas/Info.plist
+      properties:
+        CFBundleDisplayName: Atlas
+        CFBundleShortVersionString: "0.1"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        NSMicrophoneUsageDescription: "Atlas'la konuşabilmen için mikrofon gerekiyor."
+        # Kilitliyken konuşma (ücretsiz hesapta da var; AtlasProbe ile kanıtlandı 2026-10-05).
+        UIBackgroundModes: [audio]
+        LSApplicationQueriesSchemes: [shortcuts]
+        CFBundleURLTypes:
+          - CFBundleURLName: com.f23783.atlas
+            CFBundleURLSchemes: [atlas]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.f23783.atlas
   AtlasProbe:
     type: application
     platform: iOS
-    sources: [Sources]
+    sources: [Sources/Probe]
     scheme: {}
     info:
-      path: Sources/Info.plist
+      path: Sources/Probe/Info.plist
       properties:
         CFBundleDisplayName: AtlasProbe
         CFBundleShortVersionString: "0.1"
@@ -19,7 +50,6 @@ targets:
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         NSMicrophoneUsageDescription: "Ekran kilitliyken dinleme testini yapmak için mikrofon gerekiyor."
-        # Ücretsiz geliştirici hesabında da destekleniyor (Apple 'Supported capabilities' tablosu).
         UIBackgroundModes: [audio]
         LSApplicationQueriesSchemes: [shortcuts]
         CFBundleURLTypes:
@@ -28,9 +58,3 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.f23783.atlasprobe
-        TARGETED_DEVICE_FAMILY: "1"
-        SWIFT_VERSION: "5.0"
-        # İmzayı telefonda SideStore/iLoader, Fido'nun Apple ID'siyle atar.
-        CODE_SIGNING_ALLOWED: "NO"
-        CODE_SIGNING_REQUIRED: "NO"
-        CODE_SIGN_IDENTITY: ""
