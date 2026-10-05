@@ -30,7 +30,7 @@ struct ContentView: View {
                     LabeledContent("Toplam ölçüm", value: "\(probe.samples.count)")
                     LabeledContent("Arka planda / kilitliyken", value: "\(probe.backgroundCount)")
                     LabeledContent("…bunların sesli olanı", value: "\(probe.backgroundVoiceCount)")
-                        .foregroundStyle(probe.backgroundVoiceCount > 0 ? .green : .secondary)
+                        .foregroundStyle(probe.backgroundVoiceCount > 0 ? Color.green : Color.secondary)
                 }
 
                 Section("2 · Kestirme çalıştır ve geri dön") {
