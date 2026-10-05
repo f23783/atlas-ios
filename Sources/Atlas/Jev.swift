@@ -33,6 +33,7 @@ enum Jev {
     @MainActor
     static func options(shortcuts: [AllowedShortcut]) -> [(String, String)] {
         var o: [(String, String)] = [
+            ("atlas_bak", "Fido'nun kendisi, projeleri, hedefleri, kariyeri, ev ağı, homelab, notları, geçmiş kararları ya da Atlas'ın hafızası hakkında soru: \"TUSAŞ başvurum ne durumda\", \"Proxmox'u nasıl uyandırıyordum\", \"bu hafta ne üzerinde çalıştık\"."),
             ("hava_durumu", "Hava durumu: sıcaklık, yağmur/kar ihtimali, rüzgar, soğuk mu sıcak mı. \"Yarın şemsiye lazım mı?\""),
             ("zamanlayici", "Geri sayım ve kısa süreli hatırlatma: \"10 dakika sonra haber ver\", \"kaç dakika kaldı\"."),
             ("telefon", "Bu iPhone'un durumu: pil, şarj, Düşük Güç Modu, ısınma, depolama, ekran parlaklığı."),

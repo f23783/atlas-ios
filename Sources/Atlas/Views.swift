@@ -209,6 +209,7 @@ struct SettingsView: View {
                     Text("Ön-seçim: sen konuşurken ayrı bir döküm modeli yazıya çevirir, Jev bakar, gerekiyorsa Gemini'ye tek satır ipucu verir. TypeSafe anahtarı gerekir.")
                 }
                 ShortcutsSection()
+                VaultSection()
                 Section("Model") {
                     Picker("Model", selection: $s.model) {
                         ForEach(Catalog.models, id: \.id) { Text($0.label).tag($0.id) }
@@ -384,5 +385,23 @@ struct LabView: View {
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Bitti") { dismiss() } } }
         }
         .preferredColorScheme(.dark)
+    }
+}
+
+
+/// Vault (ikinci beyin) erişimi: GitHub token + eşitleme durumu.
+struct VaultSection: View {
+    @EnvironmentObject var s: AppSettings
+    @ObservedObject private var vault = Vault.shared
+
+    var body: some View {
+        Section {
+            SecureField("GitHub token (FidoOS, salt okuma)", text: $s.githubToken).textInputAutocapitalization(.never).autocorrectionDisabled()
+            LabeledContent("Durum", value: vault.status)
+            Button("Şimdi eşitle") { Task { await vault.sync(token: s.githubToken) } }
+                .disabled(s.githubToken.isEmpty)
+        } header: { Text("İkinci beyin (vault)") } footer: {
+            Text("Atlas, Fido hakkında bir şey bilmesi gerektiğinde notlara bakar; bağlama yalnız en ilgili birkaç kısa parça girer. Notlar telefonda önbellekte tutulur, açılışta değişenler indirilir.")
+        }
     }
 }

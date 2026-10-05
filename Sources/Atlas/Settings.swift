@@ -50,6 +50,8 @@ enum Catalog {
     Konuşur gibi cevap ver: kısa cümleler, doğal tonlama. Liste, madde işareti, markdown kullanma.
     Emin değilsen söyle, uydurma.
     Canlı bilgi gerektiren sorularda (hava, saat, takvim, telefonun durumu) tahmin etme, aracı kullan.
+    Fido'nun kendisi, projeleri, hedefleri, geçmiş kararları ya da notları hakkında bir şey bilmen gerekirse tahmin etme,
+    atlas_bak ile onun ikinci beynine bak. Bulduğun bilginin hangi nottan geldiğini gerekirse kısaca söyle.
     """
 }
 
@@ -63,6 +65,8 @@ final class AppSettings: ObservableObject {
     @Published var toolMode: String { didSet { d.set(toolMode, forKey: "toolMode") } }
     @Published var geminiKey: String { didSet { Keychain.set("gemini", geminiKey) } }
     @Published var typesafeKey: String { didSet { Keychain.set("typesafe", typesafeKey) } }
+    /// Yalnız f23783/FidoOS, yalnız Contents: Read-only (fine-grained). Vault araması (atlas_bak) için.
+    @Published var githubToken: String { didSet { Keychain.set("github", githubToken) } }
     /// Atlas'ın çalıştırabileceği Kestirmeler (izin listesi). Listede olmayan Kestirme çalıştırılamaz.
     @Published var shortcuts: [AllowedShortcut] {
         didSet { d.set(try? JSONEncoder().encode(shortcuts), forKey: "shortcuts") }
@@ -77,6 +81,7 @@ final class AppSettings: ObservableObject {
         toolMode = d.string(forKey: "toolMode") ?? "direct"
         geminiKey = Keychain.get("gemini")
         typesafeKey = Keychain.get("typesafe")
+        githubToken = Keychain.get("github")
         shortcuts = (d.data(forKey: "shortcuts")).flatMap { try? JSONDecoder().decode([AllowedShortcut].self, from: $0) } ?? []
     }
 }

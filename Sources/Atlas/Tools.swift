@@ -8,6 +8,13 @@ enum Tools {
     static func declarations(shortcuts: [AllowedShortcut]) -> [[String: Any]] {
         var d: [[String: Any]] = [
             ["name": "get_current_time", "description": "Şu anki tarih ve saati (Europe/Istanbul) döndürür. Takvim/anımsatıcı tarihlerini hesaplamadan önce kullan."],
+            ["name": "atlas_bak",
+             "description": "Fido'nun ikinci beyni (FidoOS vault): projeleri, hedefleri, kariyeri, ev ağı ve homelab, sağlık/spor, finans, "
+                + "araştırma notları, geçmiş kararlar ve Atlas'ın hafızası. Fido hakkında ya da onun işleri hakkında bilgi gerekince çağır. "
+                + "En ilgili birkaç kısa parçayı döndürür.",
+             "parameters": ["type": "OBJECT", "properties": [
+                "soru": ["type": "STRING", "description": "Ne aranıyor, kısa ve somut (ör. \"TUSAŞ başvurusunda eksik adımlar\")."],
+             ] as [String: Any], "required": ["soru"]]],
             ["name": "hava_durumu",
              "description": "Güncel hava ve 7 güne kadar tahmin. Şehir verilmezse telefonun bulunduğu yer kullanılır.",
              "parameters": ["type": "OBJECT", "properties": [
@@ -60,7 +67,7 @@ enum Tools {
         return d
     }
 
-    static func run(_ call: [String: Any], shortcuts: [AllowedShortcut], host: ToolHost) async -> [String: Any] {
+    static func run(_ call: [String: Any], shortcuts: [AllowedShortcut], host: ToolHost, jevKey: String = "") async -> [String: Any] {
         let name = call["name"] as? String ?? ""
         let a = call["args"] as? [String: Any] ?? [:]
         switch name {
@@ -71,6 +78,8 @@ enum Tools {
             let iso = DateFormatter()
             iso.locale = Locale(identifier: "en_US_POSIX"); iso.timeZone = f.timeZone; iso.dateFormat = "yyyy-MM-dd HH:mm"
             return ["simdi": f.string(from: Date()), "iso": iso.string(from: Date())]
+        case "atlas_bak":
+            return await Vault.shared.search(a["soru"] as? String ?? "", jevKey: jevKey)
         case "hava_durumu":
             return await weather(sehir: (a["sehir"] as? String).flatMap { $0.isEmpty ? nil : $0 }, gun: a["gun"] as? String ?? "bugun")
         case "zamanlayici":

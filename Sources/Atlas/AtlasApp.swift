@@ -21,6 +21,11 @@ struct AtlasApp: App {
         _settings = StateObject(wrappedValue: s)
         _assistant = StateObject(wrappedValue: Assistant(settings: s))
         UNUserNotificationCenter.current().delegate = notifications
+        // Vault: önce önbellek, sonra arka planda değişenleri indir
+        Task { @MainActor in
+            Vault.shared.loadCached()
+            await Vault.shared.sync(token: s.githubToken)
+        }
         Log.i("Atlas açıldı · iOS \(UIDevice.current.systemVersion)")
     }
 

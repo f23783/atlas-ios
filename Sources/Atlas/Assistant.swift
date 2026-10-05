@@ -274,7 +274,7 @@ final class Assistant: ObservableObject, LiveClientDelegate, ToolHost {
             let name = call["name"] as? String ?? "?"
             current { $0.chips.append("araç: \(Self.label(name))") }
             Log.i("araç → \(name) \(call["args"].map { "\($0)" } ?? "")")
-            let result = await Tools.run(call, shortcuts: settings.shortcuts, host: self)
+            let result = await Tools.run(call, shortcuts: settings.shortcuts, host: self, jevKey: settings.typesafeKey)
             Log.i("araç ← \(name) \(String(describing: result).prefix(300))")
             responses.append(["id": call["id"] ?? "", "name": name, "response": result])
         }
@@ -291,7 +291,7 @@ final class Assistant: ObservableObject, LiveClientDelegate, ToolHost {
     }
 
     static func label(_ n: String) -> String {
-        ["get_current_time": "saat", "hava_durumu": "hava", "zamanlayici": "zamanlayıcı", "telefon": "telefon",
+        ["get_current_time": "saat", "atlas_bak": "Atlas'a baktı", "hava_durumu": "hava", "zamanlayici": "zamanlayıcı", "telefon": "telefon",
          "takvim": "takvim", "animsatici": "anımsatıcı", "kestirme_calistir": "kestirme"][n] ?? n
     }
 
