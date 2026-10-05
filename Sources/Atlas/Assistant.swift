@@ -61,6 +61,8 @@ final class Assistant: ObservableObject, LiveClientDelegate, ToolHost {
     private var stopping = false
     private var watchdog: Task<Void, Never>?
     private var lastReason = ""
+    private var memoryContext = ""   // açılışta vault'tan: kişilik talimatları + son oturumlar
+    private var searchBlocked = false // arama kotası yoksa bu oturumda kapat
 
     // Süre ölçümü (masaüstündeki timing ile aynı cetvel): başlangıç = sustuğun an / Gönder anı.
     private var tStart: Date?
@@ -126,7 +128,22 @@ final class Assistant: ObservableObject, LiveClientDelegate, ToolHost {
                     }
                 }
                 if self.activeMode == "jev_pre" { self.scribe.start(key: self.settings.geminiKey) }
-                self.connect(.connecting)
+                self.searchBlocked = false
+                self.conn = .connecting
+                Task {
+                    // Hafıza en fazla 4 sn beklenir; gecikirse onsuz bağlan (konuşma beklemesin).
+                    let ctx = await withTaskGroup(of: String?.self) { g -> String in
+                        g.addTask { await SessionMemory.shared.context(token: self.settings.githubToken) }
+                        g.addTask { try? await Task.sleep(for: .seconds(4)); return nil }
+                        let first = await g.next() ?? nil
+                        g.cancelAll()
+                        return first ?? ""
+                    }
+                    if ctx.isEmpty { Log.w("hafıza zamanında yüklenemedi, onsuz bağlanılıyor") }
+                    self.memoryContext = ctx
+                    guard !self.stopping else { return }
+                    self.connect(.connecting)
+                }
             }
         }
     }
@@ -151,6 +168,17 @@ final class Assistant: ObservableObject, LiveClientDelegate, ToolHost {
         audio.stop()
         conn = .idle
         UIApplication.shared.isIdleTimerDisabled = false
+        saveMemory()
+    }
+
+    /// Özetlenmemiş konuşmayı vault'a yaz (kapanışta ve uygulama arka plana geçerken).
+    func saveMemory() {
+        let turns = self.turns, key = settings.geminiKey, token = settings.githubToken
+        let bg = UIApplication.shared.beginBackgroundTask(withName: "hafiza")
+        Task {
+            await SessionMemory.shared.save(turns: turns, geminiKey: key, token: token)
+            UIApplication.shared.endBackgroundTask(bg)
+        }
     }
 
     private func resumeAudio() {
@@ -165,8 +193,8 @@ final class Assistant: ObservableObject, LiveClientDelegate, ToolHost {
                 "responseModalities": ["AUDIO"],
                 "speechConfig": ["voiceConfig": ["prebuiltVoiceConfig": ["voiceName": settings.voice]]],
             ],
-            "systemInstruction": ["parts": [["text": Catalog.systemInstruction]], "role": "user"],
-            "tools": [["functionDeclarations": Tools.declarations(shortcuts: settings.shortcuts)]],
+            "systemInstruction": ["parts": [["text": systemText()]], "role": "user"],
+            "tools": toolsList(),
             "outputAudioTranscription": [:] as [String: Any],
             // 15 dk sınırını kaldırır ve maliyete tavan koyar (Live her turda tüm bağlamı faturalar).
             "contextWindowCompression": ["triggerTokens": String(settings.contextLimit), "slidingWindow": [:] as [String: Any]],
@@ -179,6 +207,21 @@ final class Assistant: ObservableObject, LiveClientDelegate, ToolHost {
             setup["inputAudioTranscription"] = [:] as [String: Any]
         }
         return setup
+    }
+
+    private var searchOn: Bool { settings.googleSearch && !searchBlocked }
+
+    private func systemText() -> String {
+        var s = Catalog.systemInstruction
+        if searchOn { s += "\nGüncel olaylar, haberler, fiyatlar gibi internette olan bilgiler için Google araması yap." }
+        if !memoryContext.isEmpty { s += "\n\n" + memoryContext }
+        return s
+    }
+
+    private func toolsList() -> [[String: Any]] {
+        var t: [[String: Any]] = [["functionDeclarations": Tools.declarations(shortcuts: settings.shortcuts)]]
+        if searchOn { t.append(["googleSearch": [:] as [String: Any]]) }
+        return t
     }
 
     private func connect(_ phase: Conn) {
@@ -204,6 +247,16 @@ final class Assistant: ObservableObject, LiveClientDelegate, ToolHost {
         if stopping { return }
         lastReason = reason.isEmpty ? "kod \(code)" : reason
         Log.e("bağlantı kapandı: kod=\(code) sebep=\(reason.isEmpty ? "-" : reason) (açık kaldı \(String(format: "%.1f", Date().timeIntervalSince(openedAt))) sn)")
+        // Arama açıkken kota hatası: anahtarın projesinde arama kotası yok (masaüstünde ücretsiz katmanda böyleydi).
+        // Bağlantıyı öldürme; aramayı bu oturum için kapat, hemen yeniden bağlan.
+        if searchOn && lastReason.lowercased().contains("quota") {
+            searchBlocked = true
+            Log.w("arama kotası yok: Google araması bu oturumda kapatıldı, yeniden bağlanılıyor")
+            current { $0.chips.append("internet araması kullanılamıyor (kota)") }
+            handle = nil
+            connect(.reconnecting)
+            return
+        }
         let r = NSRange(lastReason.startIndex..., in: lastReason)
         if code == 1008 || Self.fatal.firstMatch(in: lastReason, range: r) != nil {
             error = "Bağlantı kapandı: \(lastReason)"
@@ -245,6 +298,10 @@ final class Assistant: ObservableObject, LiveClientDelegate, ToolHost {
         reconnects = 0
         if sc["modelTurn"] != nil || sc["outputTranscription"] != nil || sc["interrupted"] != nil { watchdog?.cancel() }
 
+        if sc["groundingMetadata"] != nil, !(turns.last?.chips.contains("internette aradı") ?? false) {
+            current { $0.chips.append("internette aradı") }
+            Log.i("Google araması kullanıldı")
+        }
         if (sc["interrupted"] as? Bool) == true {
             audio.flush()
             finishTiming(cut: true)

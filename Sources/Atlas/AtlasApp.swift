@@ -15,6 +15,7 @@ struct AtlasApp: App {
     @StateObject private var assistant: Assistant
 
     private let notifications = NotificationDelegate()
+    @Environment(\.scenePhase) private var phase
 
     init() {
         let s = AppSettings()
@@ -38,6 +39,10 @@ struct AtlasApp: App {
                 .onOpenURL { url in
                     if ShortcutRunner.shared.handle(url) { return } // atlas://kestirme/... dönüşü
                     if url.host == "dinle", assistant.conn == .idle { assistant.start() }
+                }
+                // Uygulamadan çıkınca: oturum kapalıysa konuşmayı hafızaya yaz (açıksa arka planda sürüyor, kapanınca yazılır).
+                .onChange(of: phase) { _, p in
+                    if p == .background, assistant.conn == .idle { assistant.saveMemory() }
                 }
         }
     }

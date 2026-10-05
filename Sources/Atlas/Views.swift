@@ -208,6 +208,9 @@ struct SettingsView: View {
                 } header: { Text("Araç seçimi") } footer: {
                     Text("Ön-seçim: sen konuşurken ayrı bir döküm modeli yazıya çevirir, Jev bakar, gerekiyorsa Gemini'ye tek satır ipucu verir. TypeSafe anahtarı gerekir.")
                 }
+                Section {
+                    Toggle("Google araması", isOn: $s.googleSearch)
+                } footer: { Text("Faturalı anahtar gerekir. Kota hatası gelirse o oturumda kendiliğinden kapanır.") }
                 ShortcutsSection()
                 VaultSection()
                 Section("Model") {

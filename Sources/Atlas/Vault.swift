@@ -74,6 +74,12 @@ final class Vault: ObservableObject {
         }
     }
 
+    /// Önbellekteki bir notun metni (çevrimdışı hafıza için).
+    func cachedText(_ path: String) -> String? {
+        guard let sha = loadIndex()[path] else { return nil }
+        return try? String(contentsOf: dir.appendingPathComponent(sha + ".md"), encoding: .utf8)
+    }
+
     func loadCached() {
         if sections.isEmpty { build(loadIndex()) }
         if noteCount > 0 { status = "\(noteCount) not (önbellek)" }

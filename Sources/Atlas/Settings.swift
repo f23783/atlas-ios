@@ -63,6 +63,8 @@ final class AppSettings: ObservableObject {
     @Published var contextLimit: Int { didSet { d.set(contextLimit, forKey: "contextLimit") } }
     /// "direct": Gemini araçları kendisi seçer · "jev_pre": Jev cümleye önce bakar, gerekiyorsa ipucu verir (paralel döküm + istemci sırası)
     @Published var toolMode: String { didSet { d.set(toolMode, forKey: "toolMode") } }
+    /// Google araması (faturalı anahtar gerekir; kota hatası gelirse oturum içinde kendiliğinden kapanır).
+    @Published var googleSearch: Bool { didSet { d.set(googleSearch, forKey: "googleSearch") } }
     @Published var geminiKey: String { didSet { Keychain.set("gemini", geminiKey) } }
     @Published var typesafeKey: String { didSet { Keychain.set("typesafe", typesafeKey) } }
     /// Yalnız f23783/FidoOS, yalnız Contents: Read-only (fine-grained). Vault araması (atlas_bak) için.
@@ -79,6 +81,7 @@ final class AppSettings: ObservableObject {
         let c = d.integer(forKey: "contextLimit")
         contextLimit = c == 0 ? 8000 : c
         toolMode = d.string(forKey: "toolMode") ?? "direct"
+        googleSearch = d.object(forKey: "googleSearch") as? Bool ?? true
         geminiKey = Keychain.get("gemini")
         typesafeKey = Keychain.get("typesafe")
         githubToken = Keychain.get("github")
