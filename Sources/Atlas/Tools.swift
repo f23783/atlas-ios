@@ -9,11 +9,11 @@ enum Tools {
         var d: [[String: Any]] = [
             ["name": "get_current_time", "description": "Şu anki tarih ve saati (Europe/Istanbul) döndürür. Takvim/anımsatıcı tarihlerini hesaplamadan önce kullan."],
             ["name": "atlas_bak",
-             "description": "Fido'nun ikinci beyni (FidoOS vault): projeleri, hedefleri, kariyeri, ev ağı ve homelab, sağlık/spor, finans, "
+             "description": "Fido'nun ikinci beyni (FidoOS vault): projeleri, hedefleri, kariyeri, ev ağı ve homelab, "
                 + "araştırma notları, geçmiş kararlar ve Atlas'ın hafızası. Fido hakkında ya da onun işleri hakkında bilgi gerekince çağır. "
                 + "En ilgili birkaç kısa parçayı döndürür.",
              "parameters": ["type": "OBJECT", "properties": [
-                "soru": ["type": "STRING", "description": "Ne aranıyor, kısa ve somut (ör. \"TUSAŞ başvurusunda eksik adımlar\")."],
+                "soru": ["type": "STRING", "description": "Ne aranıyor, kısa ve somut (ör. \"ev ağı projesindeki eksik adımlar\")."],
              ] as [String: Any], "required": ["soru"]]],
             ["name": "hava_durumu",
              "description": "Güncel hava ve 7 güne kadar tahmin. Şehir verilmezse telefonun bulunduğu yer kullanılır.",
